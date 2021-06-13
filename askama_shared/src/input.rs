@@ -1,6 +1,6 @@
 use crate::{CompileError, Config, Syntax};
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use quote::ToTokens;
@@ -124,11 +124,8 @@ impl<'a> TemplateInput<'a> {
         // of `ext` is merged into a synthetic `path` value here.
         let source = source.expect("template path or source not found in attributes");
         let path = match (&source, &ext) {
-            (&Source::Path(ref path), None) => config.find_template(path, None)?,
+            (&Source::Path(ref path), _) => config.find_template(path, None)?,
             (&Source::Source(_), Some(ext)) => PathBuf::from(format!("{}.{}", ast.ident, ext)),
-            (&Source::Path(_), Some(_)) => {
-                return Err("'ext' attribute cannot be used with 'path' attribute".into())
-            }
             (&Source::Source(_), None) => {
                 return Err("must include 'ext' attribute when using 'source' attribute".into())
             }
@@ -189,14 +186,32 @@ impl<'a> TemplateInput<'a> {
         Ok(TemplateInput {
             ast,
             config,
+            syntax,
             source,
             print,
             escaper,
             ext,
             parent,
             path,
-            syntax,
         })
+    }
+
+    pub fn extension(&self) -> Option<&str> {
+        self.ext.as_deref().or_else(|| extension(&self.path))
+    }
+}
+
+fn extension(path: &Path) -> Option<&str> {
+    let ext = path.extension().map(|s| s.to_str().unwrap())?;
+
+    const JINJA_EXTENSIONS: [&str; 3] = ["j2", "jinja", "jinja2"];
+    if JINJA_EXTENSIONS.contains(&ext) {
+        Path::new(path.file_stem().unwrap())
+            .extension()
+            .map(|s| s.to_str().unwrap())
+            .or(Some(ext))
+    } else {
+        Some(ext)
     }
 }
 
@@ -225,5 +240,53 @@ impl FromStr for Print {
             "none" => None,
             v => return Err(format!("invalid value for print option: {}", v,).into()),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_ext() {
+        assert_eq!(extension(Path::new("foo-bar.txt")), Some("txt"));
+        assert_eq!(extension(Path::new("foo-bar.html")), Some("html"));
+        assert_eq!(extension(Path::new("foo-bar.unknown")), Some("unknown"));
+
+        assert_eq!(extension(Path::new("foo/bar/baz.txt")), Some("txt"));
+        assert_eq!(extension(Path::new("foo/bar/baz.html")), Some("html"));
+        assert_eq!(extension(Path::new("foo/bar/baz.unknown")), Some("unknown"));
+    }
+
+    #[test]
+    fn test_double_ext() {
+        assert_eq!(extension(Path::new("foo-bar.html.txt")), Some("txt"));
+        assert_eq!(extension(Path::new("foo-bar.txt.html")), Some("html"));
+        assert_eq!(extension(Path::new("foo-bar.txt.unknown")), Some("unknown"));
+
+        assert_eq!(extension(Path::new("foo/bar/baz.html.txt")), Some("txt"));
+        assert_eq!(extension(Path::new("foo/bar/baz.txt.html")), Some("html"));
+        assert_eq!(
+            extension(Path::new("foo/bar/baz.txt.unknown")),
+            Some("unknown")
+        );
+    }
+
+    #[test]
+    fn test_skip_jinja_ext() {
+        assert_eq!(extension(Path::new("foo-bar.html.j2")), Some("html"));
+        assert_eq!(extension(Path::new("foo-bar.html.jinja")), Some("html"));
+        assert_eq!(extension(Path::new("foo-bar.html.jinja2")), Some("html"));
+
+        assert_eq!(extension(Path::new("foo/bar/baz.txt.j2")), Some("txt"));
+        assert_eq!(extension(Path::new("foo/bar/baz.txt.jinja")), Some("txt"));
+        assert_eq!(extension(Path::new("foo/bar/baz.txt.jinja2")), Some("txt"));
+    }
+
+    #[test]
+    fn test_only_jinja_ext() {
+        assert_eq!(extension(Path::new("foo-bar.j2")), Some("j2"));
+        assert_eq!(extension(Path::new("foo-bar.jinja")), Some("jinja"));
+        assert_eq!(extension(Path::new("foo-bar.jinja2")), Some("jinja2"));
     }
 }

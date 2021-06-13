@@ -156,10 +156,7 @@ impl<'a, S: std::hash::BuildHasher> Generator<'a, S> {
         buf.writeln("}")?;
 
         buf.writeln("fn extension(&self) -> Option<&'static str> {")?;
-        buf.writeln(&format!(
-            "{:?}",
-            self.input.path.extension().map(|s| s.to_str().unwrap())
-        ))?;
+        buf.writeln(&format!("{:?}", self.input.extension()))?;
         buf.writeln("}")?;
 
         buf.writeln("fn size_hint(&self) -> usize {")?;
@@ -175,10 +172,7 @@ impl<'a, S: std::hash::BuildHasher> Generator<'a, S> {
         buf.writeln("}")?;
 
         buf.writeln("fn extension() -> Option<&'static str> {")?;
-        buf.writeln(&format!(
-            "{:?}",
-            self.input.path.extension().map(|s| s.to_str().unwrap())
-        ))?;
+        buf.writeln(&format!("{:?}", self.input.extension()))?;
         buf.writeln("}")?;
 
         buf.writeln("}")?;
@@ -221,8 +215,8 @@ impl<'a, S: std::hash::BuildHasher> Generator<'a, S> {
              -> Self::Future {",
         )?;
 
-        buf.writeln("use ::askama_actix::TemplateIntoResponse;")?;
-        buf.writeln("::askama_actix::futures::ready(self.into_response())")?;
+        buf.writeln("use ::askama_actix::TemplateToResponse;")?;
+        buf.writeln("::askama_actix::futures::ready(self.to_response())")?;
 
         buf.writeln("}")?;
         buf.writeln("}")
@@ -235,10 +229,7 @@ impl<'a, S: std::hash::BuildHasher> Generator<'a, S> {
             "fn into_response(self, _state: &::askama_gotham::State)\
              -> ::askama_gotham::Response<::askama_gotham::Body> {",
         )?;
-        let ext = match self.input.path.extension() {
-            Some(s) => s.to_str().unwrap(),
-            None => "txt",
-        };
+        let ext = self.input.extension().unwrap_or("txt");
         buf.writeln(&format!("::askama_gotham::respond(&self, {:?})", ext))?;
         buf.writeln("}")?;
         buf.writeln("}")
@@ -256,12 +247,7 @@ impl<'a, S: std::hash::BuildHasher> Generator<'a, S> {
             "res.body = Some(Box::new(::askama_iron::Template::render(&self).unwrap().into_bytes()));",
         )?;
 
-        let ext = self
-            .input
-            .path
-            .extension()
-            .map_or("", |s| s.to_str().unwrap_or(""));
-        match ext {
+        match self.input.extension().unwrap_or("") {
             "html" | "htm" => {
                 buf.writeln("::askama_iron::ContentType::html().0.modify(res);")?;
             }
@@ -314,7 +300,7 @@ impl<'a, S: std::hash::BuildHasher> Generator<'a, S> {
 
         buf.writeln(&format!(
             "::mendes::askama::into_response(app, req, &self, {:?})",
-            self.input.path.extension()
+            self.input.extension()
         ))?;
         buf.writeln("}")?;
         buf.writeln("}")?;
@@ -341,10 +327,7 @@ impl<'a, S: std::hash::BuildHasher> Generator<'a, S> {
              -> ::askama_rocket::Result<'out> {",
         )?;
 
-        let ext = match self.input.path.extension() {
-            Some(s) => s.to_str().unwrap(),
-            None => "txt",
-        };
+        let ext = self.input.extension().unwrap_or("txt");
         buf.writeln(&format!("::askama_rocket::respond(&self, {:?})", ext))?;
 
         buf.writeln("}")?;
@@ -353,12 +336,7 @@ impl<'a, S: std::hash::BuildHasher> Generator<'a, S> {
     }
 
     fn impl_tide_integrations(&mut self, buf: &mut Buffer) -> Result<(), CompileError> {
-        let ext = self
-            .input
-            .path
-            .extension()
-            .and_then(|s| s.to_str())
-            .unwrap_or("txt");
+        let ext = self.input.extension().unwrap_or("txt");
 
         self.write_header(
             buf,
@@ -372,6 +350,8 @@ impl<'a, S: std::hash::BuildHasher> Generator<'a, S> {
         buf.writeln(&format!("::askama_tide::try_into_body(&self, {:?})", &ext))?;
         buf.writeln("}")?;
         buf.writeln("}")?;
+
+        buf.writeln("#[allow(clippy::from_over_into)]")?;
         self.write_header(buf, "Into<::askama_tide::tide::Response>", None)?;
         buf.writeln("fn into(self) -> ::askama_tide::tide::Response {")?;
         buf.writeln(&format!("::askama_tide::into_response(&self, {:?})", ext))?;
@@ -381,12 +361,7 @@ impl<'a, S: std::hash::BuildHasher> Generator<'a, S> {
     fn impl_warp_reply(&mut self, buf: &mut Buffer) -> Result<(), CompileError> {
         self.write_header(buf, "::askama_warp::warp::reply::Reply", None)?;
         buf.writeln("fn into_response(self) -> ::askama_warp::warp::reply::Response {")?;
-        let ext = self
-            .input
-            .path
-            .extension()
-            .and_then(|s| s.to_str())
-            .unwrap_or("txt");
+        let ext = self.input.extension().unwrap_or("txt");
         buf.writeln(&format!("::askama_warp::reply(&self, {:?})", ext))?;
         buf.writeln("}")?;
         buf.writeln("}")
@@ -617,6 +592,7 @@ impl<'a, S: std::hash::BuildHasher> Generator<'a, S> {
                     buf.write("{");
                     for (i, param) in params.iter().enumerate() {
                         if let Some(MatchParameter::Name(p)) = param.1 {
+                            let p = normalize_identifier(p);
                             self.locals.insert_with_default(p);
                         } else {
                             self.locals.insert_with_default(param.0);
@@ -728,7 +704,7 @@ impl<'a, S: std::hash::BuildHasher> Generator<'a, S> {
             })?;
             (
                 mctx.macros.get(name).ok_or_else(|| {
-                    CompileError::String(format!("macro '{}' not found in scope '{}'", s, name))
+                    CompileError::String(format!("macro '{}' not found in scope '{}'", name, s))
                 })?,
                 mctx,
             )
@@ -853,12 +829,14 @@ impl<'a, S: std::hash::BuildHasher> Generator<'a, S> {
         buf.write("let ");
         match *var {
             Target::Name(name) => {
+                let name = normalize_identifier(name);
                 self.locals.insert_with_default(name);
                 buf.write(name);
             }
             Target::Tuple(ref targets) => {
                 buf.write("(");
                 for name in targets {
+                    let name = normalize_identifier(name);
                     self.locals.insert_with_default(name);
                     buf.write(name);
                     buf.write(",");
@@ -882,6 +860,7 @@ impl<'a, S: std::hash::BuildHasher> Generator<'a, S> {
 
         match *var {
             Target::Name(name) => {
+                let name = normalize_identifier(name);
                 let meta = self.locals.get(&name).cloned();
 
                 let shadowed = matches!(&meta, Some(meta) if meta.initialized);
@@ -898,9 +877,10 @@ impl<'a, S: std::hash::BuildHasher> Generator<'a, S> {
                 self.locals.insert(name, LocalMeta::initialized());
             }
             Target::Tuple(ref targets) => {
-                let shadowed = targets
-                    .iter()
-                    .any(|name| matches!(self.locals.get(&name), Some(meta) if meta.initialized));
+                let shadowed = targets.iter().any(|name| {
+                    let name = normalize_identifier(name);
+                    matches!(self.locals.get(&name), Some(meta) if meta.initialized)
+                });
                 if shadowed {
                     // Need to flush the buffer if the variable is being shadowed,
                     // to ensure the old variable is used.
@@ -909,6 +889,7 @@ impl<'a, S: std::hash::BuildHasher> Generator<'a, S> {
 
                 buf.write("let (");
                 for name in targets {
+                    let name = normalize_identifier(name);
                     self.locals.insert(name, LocalMeta::initialized());
                     buf.write(name);
                     buf.write(",");
@@ -1004,7 +985,7 @@ impl<'a, S: std::hash::BuildHasher> Generator<'a, S> {
             .all(|w| matches!(w, Writable::Lit(_)))
         {
             let mut buf_lit = Buffer::new(0);
-            for s in mem::replace(&mut self.buf_writable, vec![]) {
+            for s in mem::take(&mut self.buf_writable) {
                 if let Writable::Lit(s) = s {
                     buf_lit.write(s);
                 };
@@ -1017,7 +998,7 @@ impl<'a, S: std::hash::BuildHasher> Generator<'a, S> {
         let mut buf_format = Buffer::new(0);
         let mut buf_expr = Buffer::new(buf.indent + 1);
         let mut expr_cache = HashMap::with_capacity(self.buf_writable.len());
-        for s in mem::replace(&mut self.buf_writable, vec![]) {
+        for s in mem::take(&mut self.buf_writable) {
             match s {
                 Writable::Lit(s) => {
                     buf_format.write(&s.replace("{", "{{").replace("}", "}}"));
@@ -1289,11 +1270,13 @@ impl<'a, S: std::hash::BuildHasher> Generator<'a, S> {
                 buf.write("&(");
             }
 
-            let scoped = matches!(arg,
+            let scoped = matches!(
+                arg,
                 Expr::Filter(_, _)
-                | Expr::MethodCall(_, _, _)
-                | Expr::VarCall(_, _)
-                | Expr::PathCall(_, _));
+                    | Expr::MethodCall(_, _, _)
+                    | Expr::VarCall(_, _)
+                    | Expr::PathCall(_, _)
+            );
 
             if scoped {
                 buf.writeln("{")?;
@@ -1471,7 +1454,7 @@ impl<'a, S: std::hash::BuildHasher> Generator<'a, S> {
             return DisplayWrap::Unwrapped;
         }
 
-        buf.write(&self.locals.resolve_or_self(&s));
+        buf.write(normalize_identifier(&self.locals.resolve_or_self(&s)));
         DisplayWrap::Unwrapped
     }
 
@@ -1482,12 +1465,11 @@ impl<'a, S: std::hash::BuildHasher> Generator<'a, S> {
         args: &[Expr],
     ) -> Result<DisplayWrap, CompileError> {
         buf.write("(");
-        if self.locals.contains(&s) || s == "self" {
-            buf.write(s);
-        } else {
+        let s = normalize_identifier(s);
+        if !self.locals.contains(&s) && s != "self" {
             buf.write("self.");
-            buf.write(s);
         }
+        buf.write(s);
         buf.write(")(");
         self._visit_args(buf, args)?;
         buf.write(")");
@@ -1517,12 +1499,14 @@ impl<'a, S: std::hash::BuildHasher> Generator<'a, S> {
     fn visit_target(&mut self, buf: &mut Buffer, target: &'a Target) {
         match *target {
             Target::Name(name) => {
+                let name = normalize_identifier(name);
                 self.locals.insert_with_default(name);
                 buf.write(name);
             }
             Target::Tuple(ref targets) => {
                 buf.write("(");
                 for name in targets {
+                    let name = normalize_identifier(name);
                     self.locals.insert_with_default(name);
                     buf.write(name);
                     buf.write(",");
@@ -1720,6 +1704,7 @@ where
 
 impl MapChain<'_, &str, LocalMeta> {
     fn resolve(&self, name: &str) -> Option<String> {
+        let name = normalize_identifier(name);
         self.get(&name).map(|meta| match &meta.refs {
             Some(expr) => expr.clone(),
             None => name.to_string(),
@@ -1727,11 +1712,9 @@ impl MapChain<'_, &str, LocalMeta> {
     }
 
     fn resolve_or_self(&self, name: &str) -> String {
-        match self.resolve(name) {
-            Some(name) => name,
-            None if name.chars().any(char::is_uppercase) => name.to_string(),
-            None => format!("self.{}", name),
-        }
+        let name = normalize_identifier(name);
+        self.resolve(name)
+            .unwrap_or_else(|| format!("self.{}", name))
     }
 }
 
@@ -1765,4 +1748,73 @@ impl Copy for DisplayWrap {}
 enum Writable<'a> {
     Lit(&'a str),
     Expr(&'a Expr<'a>),
+}
+
+// Identifiers to be replaced with raw identifiers, so as to avoid
+// collisions between template syntax and Rust's syntax. In particular
+// [Rust keywords](https://doc.rust-lang.org/reference/keywords.html)
+// should be replaced, since they're not reserved words in Askama
+// syntax but have a high probability of causing problems in the
+// generated code.
+//
+// This list excludes the Rust keywords *self*, *Self*, and *super*
+// because they are not allowed to be raw identifiers, and *loop*
+// because it's used something like a keyword in the template
+// language.
+static USE_RAW: [(&str, &str); 47] = [
+    ("as", "r#as"),
+    ("break", "r#break"),
+    ("const", "r#const"),
+    ("continue", "r#continue"),
+    ("crate", "r#crate"),
+    ("else", "r#else"),
+    ("enum", "r#enum"),
+    ("extern", "r#extern"),
+    ("false", "r#false"),
+    ("fn", "r#fn"),
+    ("for", "r#for"),
+    ("if", "r#if"),
+    ("impl", "r#impl"),
+    ("in", "r#in"),
+    ("let", "r#let"),
+    ("match", "r#match"),
+    ("mod", "r#mod"),
+    ("move", "r#move"),
+    ("mut", "r#mut"),
+    ("pub", "r#pub"),
+    ("ref", "r#ref"),
+    ("return", "r#return"),
+    ("static", "r#static"),
+    ("struct", "r#struct"),
+    ("trait", "r#trait"),
+    ("true", "r#true"),
+    ("type", "r#type"),
+    ("unsafe", "r#unsafe"),
+    ("use", "r#use"),
+    ("where", "r#where"),
+    ("while", "r#while"),
+    ("async", "r#async"),
+    ("await", "r#await"),
+    ("dyn", "r#dyn"),
+    ("abstract", "r#abstract"),
+    ("become", "r#become"),
+    ("box", "r#box"),
+    ("do", "r#do"),
+    ("final", "r#final"),
+    ("macro", "r#macro"),
+    ("override", "r#override"),
+    ("priv", "r#priv"),
+    ("typeof", "r#typeof"),
+    ("unsized", "r#unsized"),
+    ("virtual", "r#virtual"),
+    ("yield", "r#yield"),
+    ("try", "r#try"),
+];
+
+fn normalize_identifier(ident: &str) -> &str {
+    if let Some(word) = USE_RAW.iter().find(|x| x.0 == ident) {
+        word.1
+    } else {
+        ident
+    }
 }

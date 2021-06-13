@@ -66,10 +66,11 @@ impl Expr<'_> {
             BinOp(_, lhs, rhs) => {
                 lhs.is_copyable_within_op(true) && rhs.is_copyable_within_op(true)
             }
+            Range(..) => true,
             // The result of a call likely doesn't need to be borrowed,
             // as in that case the call is more likely to return a
             // reference in the first place then.
-            VarCall(..) | PathCall(..) | MethodCall(..) => true,
+            VarCall(..) | Path(..) | PathCall(..) | MethodCall(..) => true,
             // If the `expr` is within a `Unary` or `BinOp` then
             // an assumption can be made that the operand is copy.
             // If not, then the value is moved and adding `.clone()`
@@ -355,12 +356,30 @@ fn expr_var_call(i: &[u8]) -> IResult<&[u8], Expr> {
 fn path(i: &[u8]) -> IResult<&[u8], Vec<&str>> {
     let root = opt(value("", ws(tag("::"))));
     let tail = separated_list1(ws(tag("::")), identifier);
-    let (i, (root, start, _, rest)) = tuple((root, identifier, ws(tag("::")), tail))(i)?;
-    let mut path = Vec::new();
-    path.extend(root);
-    path.push(start);
-    path.extend(rest);
-    Ok((i, path))
+
+    match tuple((root, identifier, ws(tag("::")), tail))(i) {
+        Ok((i, (root, start, _, rest))) => {
+            let mut path = Vec::new();
+            path.extend(root);
+            path.push(start);
+            path.extend(rest);
+            Ok((i, path))
+        }
+        Err(err) => {
+            if let Ok((i, name)) = identifier(i) {
+                // The returned identifier can be assumed to be path if:
+                // - Contains both a lowercase and uppercase character, i.e. a type name like `None`
+                // - Doesn't contain any lowercase characters, i.e. it's a constant
+                // In short, if it contains any uppercase characters it's a path.
+                if name.contains(char::is_uppercase) {
+                    return Ok((i, vec![name]));
+                }
+            }
+
+            // If `identifier()` fails then just return the original error
+            Err(err)
+        }
+    }
 }
 
 fn expr_path(i: &[u8]) -> IResult<&[u8], Expr> {
@@ -1210,6 +1229,76 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_var() {
+        let s = Syntax::default();
+
+        assert_eq!(
+            super::parse("{{ foo }}", &s).unwrap(),
+            vec![Node::Expr(Ws(false, false), Expr::Var("foo"))],
+        );
+        assert_eq!(
+            super::parse("{{ foo_bar }}", &s).unwrap(),
+            vec![Node::Expr(Ws(false, false), Expr::Var("foo_bar"))],
+        );
+
+        assert_eq!(
+            super::parse("{{ none }}", &s).unwrap(),
+            vec![Node::Expr(Ws(false, false), Expr::Var("none"))],
+        );
+    }
+
+    #[test]
+    fn test_parse_const() {
+        let s = Syntax::default();
+
+        assert_eq!(
+            super::parse("{{ FOO }}", &s).unwrap(),
+            vec![Node::Expr(Ws(false, false), Expr::Path(vec!["FOO"]))],
+        );
+        assert_eq!(
+            super::parse("{{ FOO_BAR }}", &s).unwrap(),
+            vec![Node::Expr(Ws(false, false), Expr::Path(vec!["FOO_BAR"]))],
+        );
+
+        assert_eq!(
+            super::parse("{{ NONE }}", &s).unwrap(),
+            vec![Node::Expr(Ws(false, false), Expr::Path(vec!["NONE"]))],
+        );
+    }
+
+    #[test]
+    fn test_parse_path() {
+        let s = Syntax::default();
+
+        assert_eq!(
+            super::parse("{{ None }}", &s).unwrap(),
+            vec![Node::Expr(Ws(false, false), Expr::Path(vec!["None"]))],
+        );
+        assert_eq!(
+            super::parse("{{ Some(123) }}", &s).unwrap(),
+            vec![Node::Expr(
+                Ws(false, false),
+                Expr::PathCall(vec!["Some"], vec![Expr::NumLit("123")],),
+            )],
+        );
+
+        assert_eq!(
+            super::parse("{{ Ok(123) }}", &s).unwrap(),
+            vec![Node::Expr(
+                Ws(false, false),
+                Expr::PathCall(vec!["Ok"], vec![Expr::NumLit("123")],),
+            )],
+        );
+        assert_eq!(
+            super::parse("{{ Err(123) }}", &s).unwrap(),
+            vec![Node::Expr(
+                Ws(false, false),
+                Expr::PathCall(vec!["Err"], vec![Expr::NumLit("123")],),
+            )],
+        );
+    }
+
+    #[test]
     fn test_parse_var_call() {
         assert_eq!(
             super::parse("{{ function(\"123\", 3) }}", &Syntax::default()).unwrap(),
@@ -1222,8 +1311,25 @@ mod tests {
 
     #[test]
     fn test_parse_path_call() {
+        let s = Syntax::default();
+
         assert_eq!(
-            super::parse("{{ self::function(\"123\", 3) }}", &Syntax::default()).unwrap(),
+            super::parse("{{ Option::None }}", &s).unwrap(),
+            vec![Node::Expr(
+                Ws(false, false),
+                Expr::Path(vec!["Option", "None"])
+            )],
+        );
+        assert_eq!(
+            super::parse("{{ Option::Some(123) }}", &s).unwrap(),
+            vec![Node::Expr(
+                Ws(false, false),
+                Expr::PathCall(vec!["Option", "Some"], vec![Expr::NumLit("123")],),
+            )],
+        );
+
+        assert_eq!(
+            super::parse("{{ self::function(\"123\", 3) }}", &s).unwrap(),
             vec![Node::Expr(
                 Ws(false, false),
                 Expr::PathCall(
